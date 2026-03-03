@@ -7,8 +7,11 @@ A lightweight Windows macro recorder/player for automating mouse and keyboard in
 ##  Features
 
 - **Record & Playback**: Captures mouse movements, clicks, scrolls, and keyboard input
-- **Global Hotkeys**: Control recording/playback from anywhere using Ctrl+1/2/3/Esc
-- **Loop Support**: Repeat macros continuously until stopped
+- **Custom Global Hotkeys**: Set your own Record/Stop/Play shortcuts in the UI
+- **Loop Support**: Repeat macros continuously or for a specific number of iterations
+- **Loop Timer**: Set delay (seconds) between each playback cycle
+- **Loop Counter**: Specify exactly how many times to repeat (e.g., run macro 5 times then stop)
+- **Background Keys**: Configure up to 10 independent keyboard keys to press at custom intervals during playback (e.g., F1 every 30s)
 - **DPI-Aware**: Handles multiple monitor setups and DPI scaling
 - **Standalone Executable**: Pre-built .exe available (no Python required for end-users)
 - **Simple UI**: Intuitive interface showing event count, duration, and hotkey instructions
@@ -17,10 +20,10 @@ A lightweight Windows macro recorder/player for automating mouse and keyboard in
 
 | Key | Action |
 |-----|--------|
-| **Ctrl+1** | Start recording |
-| **Ctrl+2** | Stop recording |
-| **Ctrl+3** | Play macro |
-| **Ctrl+Esc** | Kill (stop recording or playback) |
+| **Custom (UI setting)** | Start recording |
+| **Custom (UI setting)** | Stop recording |
+| **Custom (UI setting)** | Play macro |
+| **Custom (UI setting)** | Kill (stop recording/playback) |
 
 ##  Installation & Usage
 
@@ -63,21 +66,30 @@ py main.py
 ##  How It Works
 
 1. **Recording Phase**:
-   - Press **Ctrl+1** to start recording
+   - Press your configured **Record** hotkey to start recording
    - Move mouse, click, scroll, and type on your keyboard
-   - Press **Ctrl+2** (or Ctrl+Esc) to stop
+   - Press your configured **Stop** hotkey (or Ctrl+Esc) to stop
    - All events are timestamped and saved in memory
 
 2. **Playback Phase**:
-   - Press **Ctrl+3** to play back the recorded macro
+   - Press your configured **Play** hotkey to play back the recorded macro
    - Mouse movements and clicks are replayed with precise timing
    - Keyboard inputs are re-entered in sequence
-   - Check the "Loop" checkbox to repeat continuously
+   - Check "Loop playback" to enable looping
+   - Set **Loop interval (s)** to add a delay between repetitions (e.g., 0 = no delay, 30 = 30 seconds between runs)
+   - Set **Loop Times** to specify exact repetitions (e.g., 1 = single run, 5 = run 5 times then stop). Leave at 1 for single playback.
 
 3. **Data Format**:
    - Events stored as JSON with timestamps (in seconds)
    - Event types: `move`, `click`, `scroll`, `key`
    - Playback uses relative timing for accurate reproduction
+
+4. **Background Keys** (automation during playback):
+   - Check the checkbox for each key slot you want to use (up to 10 total)
+   - Enter key name: `f1`–`f12` for function keys, or single letters like `a`, `space`, etc.
+   - Set interval in seconds: how often this key should press (e.g., 30 = every 30 seconds)
+   - Keys activate when you press Play and run independent of macro events
+   - Example: F1 every 30s + F2 every 60s will run side-by-side during playback
 
 ##  Limitations & Notes
 
@@ -89,11 +101,11 @@ py main.py
 ##  Quick Start Example
 
 1. Open a game or application
-2. Press **Ctrl+1** (macro recorder starts)
+2. Press your configured **Record** hotkey (macro recorder starts)
 3. Perform your actions (move mouse, click, type)
-4. Press **Ctrl+2** (recording stops)
-5. Press **Ctrl+3** (playback begins)
-6. Check "Loop" and press **Ctrl+3** to repeat
+4. Press your configured **Stop** hotkey (recording stops)
+5. Press your configured **Play** hotkey (playback begins)
+6. Check "Loop" and press your configured **Play** hotkey to repeat
 
 ##  License
 

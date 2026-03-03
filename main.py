@@ -15,7 +15,6 @@ except Exception as exc:
 
 
 MOVE_SAMPLE_SEC = 0.02
-PLAYBACK_DELAY_SEC = 0.0
 SM_XVIRTUALSCREEN = 76
 SM_YVIRTUALSCREEN = 77
 SM_CXVIRTUALSCREEN = 78
@@ -122,7 +121,19 @@ class MacroApp:
         self.event_count_var = tk.StringVar(value="0")
         self.duration_var = tk.StringVar(value="0.00s")
         self.loop_var = tk.BooleanVar(value=False)
+        self.loop_interval_var = tk.StringVar(value="0.0")
+        self.loop_count_var = tk.StringVar(value="1")
         self.absolute_mouse_var = tk.BooleanVar(value=True)
+        self.hotkey_record_var = tk.StringVar(value="ctrl+1")
+        self.hotkey_stop_var = tk.StringVar(value="ctrl+2")
+        self.hotkey_play_var = tk.StringVar(value="ctrl+3")
+        self.hotkey_kill_var = tk.StringVar(value="ctrl+esc")
+        self.hotkey_info_var = tk.StringVar(value="")
+
+        self.bg_key_enabled_vars = [tk.BooleanVar(value=False) for _ in range(10)]
+        self.bg_key_name_vars = [tk.StringVar(value="f" + str(i+1)) for i in range(10)]
+        self.bg_key_interval_vars = [tk.StringVar(value="10.0") for i in range(10)]
+        self.bg_key_last_press = [0.0] * 10
 
         self.events = []
         self.recording = False
@@ -135,8 +146,17 @@ class MacroApp:
         self.keyboard_listener = None
         self.hotkey_listener = None
         self.play_thread = None
+        self.hotkey_bindings = {}
+        self.pressed_tokens = set()
+        self.active_hotkeys = set()
+        self.loop_wait_seconds = 0.0
+        self.loop_iterations = 0
+        self.loop_limit = 1
+        self.bg_keys_thread = None
+        self.kill_hotkey_binding = frozenset()
 
         self._build_ui()
+        self.apply_hotkeys(show_message=False)
         self._start_hotkey_listener()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -144,8 +164,14 @@ class MacroApp:
         frame = tk.Frame(self.root, padx=12, pady=12)
         frame.pack(fill=tk.BOTH, expand=True)
 
-        info_label = tk.Label(frame, text="Hotkeys: Ctrl+1=Record | Ctrl+2=Stop | Ctrl+3=Play | Ctrl+Esc=Kill", 
-                             bg="lightblue", fg="black", padx=8, pady=4)
+        info_label = tk.Label(
+            frame,
+            textvariable=self.hotkey_info_var,
+            bg="lightblue",
+            fg="black",
+            padx=8,
+            pady=4,
+        )
         info_label.grid(row=0, column=0, columnspan=2, sticky="we", pady=(0, 8))
 
         tk.Label(frame, text="Window title contains").grid(row=1, column=0, sticky="w")
@@ -174,26 +200,64 @@ class MacroApp:
         tk.Checkbutton(loop_row, text="Loop playback", variable=self.loop_var).pack(
             side=tk.LEFT
         )
+        tk.Label(loop_row, text="Loop interval (s)").pack(side=tk.LEFT, padx=(10, 4))
+        tk.Entry(loop_row, textvariable=self.loop_interval_var, width=8).pack(side=tk.LEFT)
+        tk.Label(loop_row, text="Times").pack(side=tk.LEFT, padx=(10, 4))
+        tk.Entry(loop_row, textvariable=self.loop_count_var, width=6).pack(side=tk.LEFT)
         tk.Checkbutton(
             loop_row,
             text="High precision mouse",
             variable=self.absolute_mouse_var,
-        ).pack(side=tk.LEFT, padx=(8, 0))
+        ).pack(side=tk.LEFT, padx=(10, 0))
+
+        hotkey_row = tk.Frame(frame)
+        hotkey_row.grid(row=4, column=0, columnspan=2, pady=(10, 0), sticky="we")
+        tk.Label(hotkey_row, text="Record").grid(row=0, column=0, sticky="w")
+        tk.Entry(hotkey_row, textvariable=self.hotkey_record_var, width=12).grid(row=0, column=1, padx=(6, 12))
+        tk.Label(hotkey_row, text="Stop").grid(row=0, column=2, sticky="w")
+        tk.Entry(hotkey_row, textvariable=self.hotkey_stop_var, width=12).grid(row=0, column=3, padx=(6, 12))
+        tk.Label(hotkey_row, text="Play").grid(row=0, column=4, sticky="w")
+        tk.Entry(hotkey_row, textvariable=self.hotkey_play_var, width=12).grid(row=0, column=5, padx=(6, 12))
+        tk.Button(hotkey_row, text="Apply Hotkeys", command=self.apply_hotkeys).grid(row=0, column=6)
+
+        hotkey_kill_row = tk.Frame(frame)
+        hotkey_kill_row.grid(row=5, column=0, columnspan=2, pady=(4, 0), sticky="w")
+        tk.Label(hotkey_kill_row, text="Kill (Stop everything):").pack(side=tk.LEFT, padx=(0, 6))
+        tk.Entry(hotkey_kill_row, textvariable=self.hotkey_kill_var, width=12).pack(side=tk.LEFT)
+
+        bg_keys_label = tk.Label(frame, text="Background Keys (press at intervals during playback):", fg="darkgreen", font=("Arial", 9, "bold"))
+        bg_keys_label.grid(row=6, column=0, columnspan=2, sticky="w", pady=(10, 4))
+
+        bg_keys_frame = tk.Frame(frame)
+        bg_keys_frame.grid(row=7, column=0, columnspan=2, sticky="we", pady=(0, 10))
+
+        for idx in range(10):
+            row_idx = idx // 5
+            col_idx = idx % 5
+
+            cell_frame = tk.Frame(bg_keys_frame)
+            cell_frame.grid(row=row_idx, column=col_idx, padx=4, pady=2, sticky="w")
+
+            tk.Checkbutton(cell_frame, variable=self.bg_key_enabled_vars[idx]).pack(side=tk.LEFT)
+            tk.Label(cell_frame, text="Key:").pack(side=tk.LEFT, padx=(2, 2))
+            tk.Entry(cell_frame, textvariable=self.bg_key_name_vars[idx], width=5).pack(side=tk.LEFT)
+            tk.Label(cell_frame, text="s:").pack(side=tk.LEFT, padx=(4, 2))
+            tk.Entry(cell_frame, textvariable=self.bg_key_interval_vars[idx], width=6).pack(side=tk.LEFT)
 
         file_row = tk.Frame(frame)
-        file_row.grid(row=4, column=0, columnspan=2, pady=(10, 0), sticky="we")
+        file_row.grid(row=8, column=0, columnspan=2, pady=(10, 0), sticky="we")
         tk.Button(file_row, text="Load", command=self.load_macro).pack(side=tk.LEFT, padx=(0, 8))
         tk.Button(file_row, text="Save", command=self.save_macro).pack(side=tk.LEFT)
 
         info = tk.Frame(frame)
-        info.grid(row=5, column=0, columnspan=2, pady=(12, 0), sticky="we")
+        info.grid(row=9, column=0, columnspan=2, pady=(12, 0), sticky="we")
         tk.Label(info, text="Events:").pack(side=tk.LEFT)
         tk.Label(info, textvariable=self.event_count_var, width=8).pack(side=tk.LEFT)
         tk.Label(info, text="Duration:").pack(side=tk.LEFT, padx=(12, 0))
         tk.Label(info, textvariable=self.duration_var, width=10).pack(side=tk.LEFT)
 
         status_row = tk.Frame(frame)
-        status_row.grid(row=6, column=0, columnspan=2, pady=(10, 0), sticky="we")
+        status_row.grid(row=10, column=0, columnspan=2, pady=(10, 0), sticky="we")
         tk.Label(status_row, text="Status:").pack(side=tk.LEFT)
         tk.Label(status_row, textvariable=self.status_var).pack(side=tk.LEFT, padx=(8, 0))
 
@@ -201,27 +265,129 @@ class MacroApp:
 
     def _start_hotkey_listener(self):
         def on_press(key):
-            if key in (keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
-                pressed.add("ctrl")
-            if key == keyboard.Key.esc and "ctrl" in pressed:
-                self.stop_all()
-            if "ctrl" in pressed and isinstance(key, keyboard.KeyCode):
-                vk = getattr(key, "vk", None)
-                if vk == 0x31:  # '1'
-                    self.root.after(0, self.start_record)
-                elif vk == 0x32:  # '2'
-                    self.root.after(0, self.stop_record)
-                elif vk == 0x33:  # '3'
-                    self.root.after(0, self.start_playback)
+            token = self._token_from_key(key)
+            if not token:
+                return
+            self.pressed_tokens.add(token)
+
+            if self._is_hotkey_pressed(self.kill_hotkey_binding, "kill"):
+                self.root.after(0, self.stop_all)
+
+            if self._is_hotkey_pressed(self.hotkey_bindings.get("record"), "record"):
+                self.root.after(0, self.start_record)
+            if self._is_hotkey_pressed(self.hotkey_bindings.get("stop"), "stop"):
+                self.root.after(0, self.stop_record)
+            if self._is_hotkey_pressed(self.hotkey_bindings.get("play"), "play"):
+                self.root.after(0, self.start_playback)
 
         def on_release(key):
-            if key in (keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
-                pressed.discard("ctrl")
+            token = self._token_from_key(key)
+            if not token:
+                return
+            self.pressed_tokens.discard(token)
+            self._refresh_active_hotkeys()
 
-        pressed = set()
         self.hotkey_listener = keyboard.Listener(on_press=on_press, on_release=on_release)
         self.hotkey_listener.daemon = True
         self.hotkey_listener.start()
+
+    def _token_from_key(self, key):
+        if key in (keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
+            return "ctrl"
+        if key in (keyboard.Key.shift, keyboard.Key.shift_l, keyboard.Key.shift_r):
+            return "shift"
+        if key in (keyboard.Key.alt_l, keyboard.Key.alt_r, keyboard.Key.alt_gr):
+            return "alt"
+        if isinstance(key, keyboard.KeyCode):
+            if key.char:
+                return key.char.lower()
+            vk = getattr(key, "vk", None)
+            if vk is not None and 32 <= vk <= 126:
+                return chr(vk).lower()
+            return None
+        return getattr(key, "name", None)
+
+    def _normalize_hotkey_text(self, value):
+        alias = {
+            "control": "ctrl",
+            "ctl": "ctrl",
+            "return": "enter",
+            "escape": "esc",
+        }
+        parts = [part.strip().lower() for part in value.split("+") if part.strip()]
+        if not parts:
+            return None
+        normalized = []
+        for part in parts:
+            normalized.append(alias.get(part, part))
+        return frozenset(normalized)
+
+    def _format_hotkey(self, combo):
+        if not combo:
+            return ""
+        order = ["ctrl", "shift", "alt"]
+        modifiers = [name for name in order if name in combo]
+        others = sorted([name for name in combo if name not in order])
+        parts = modifiers + others
+        return "+".join(part.upper() if len(part) == 1 else part.title() for part in parts)
+
+    def _refresh_hotkey_info(self):
+        text = (
+            f"Hotkeys: {self._format_hotkey(self.hotkey_bindings.get('record'))}=Record | "
+            f"{self._format_hotkey(self.hotkey_bindings.get('stop'))}=Stop | "
+            f"{self._format_hotkey(self.hotkey_bindings.get('play'))}=Play | {self._format_hotkey(self.kill_hotkey_binding)}=Kill"
+        )
+        self.hotkey_info_var.set(text)
+
+    def _is_hotkey_pressed(self, combo, action_name):
+        if not combo:
+            return False
+        active_key = ":" + action_name
+        if combo.issubset(self.pressed_tokens):
+            if active_key in self.active_hotkeys:
+                return False
+            self.active_hotkeys.add(active_key)
+            return True
+        return False
+
+    def _refresh_active_hotkeys(self):
+        keep = set()
+        if self.kill_hotkey_binding and self.kill_hotkey_binding.issubset(self.pressed_tokens):
+            keep.add(":kill")
+        for action_name, combo in self.hotkey_bindings.items():
+            if combo and combo.issubset(self.pressed_tokens):
+                keep.add(":" + action_name)
+        self.active_hotkeys = keep
+
+    def apply_hotkeys(self, show_message=True):
+        record_combo = self._normalize_hotkey_text(self.hotkey_record_var.get())
+        stop_combo = self._normalize_hotkey_text(self.hotkey_stop_var.get())
+        play_combo = self._normalize_hotkey_text(self.hotkey_play_var.get())
+        kill_combo = self._normalize_hotkey_text(self.hotkey_kill_var.get())
+
+        if not record_combo or not stop_combo or not play_combo or not kill_combo:
+            messagebox.showerror("Invalid hotkey", "Record, Stop, Play, and Kill hotkeys are required.")
+            return
+
+        combos = {
+            "record": record_combo,
+            "stop": stop_combo,
+            "play": play_combo,
+            "kill": kill_combo,
+        }
+
+        if len(set(combos.values())) != len(combos):
+            messagebox.showerror("Invalid hotkey", "All hotkeys must be unique.")
+            return
+
+        self.hotkey_bindings = {"record": record_combo, "stop": stop_combo, "play": play_combo}
+        self.kill_hotkey_binding = kill_combo
+        self.pressed_tokens.clear()
+        self.active_hotkeys.clear()
+        self._refresh_hotkey_info()
+
+        if show_message:
+            self.status_var.set("Hotkeys updated")
 
     def is_target_active(self):
         target_title = self.target_title_var.get().strip().lower()
@@ -252,7 +418,8 @@ class MacroApp:
         self.record_start = time.monotonic()
         self.last_move_time = 0.0
         self.recording = True
-        self.status_var.set("Recording (Ctrl+2 or Ctrl+Esc to stop)")
+        stop_hint = self._format_hotkey(self.hotkey_bindings.get("stop"))
+        self.status_var.set(f"Recording ({stop_hint} or Ctrl+Esc to stop)")
 
         start_x, start_y = get_cursor_pos()
         self.events.append({
@@ -301,15 +468,34 @@ class MacroApp:
         if not self.events:
             messagebox.showinfo("Empty", "No macro recorded or loaded.")
             return
+
+        loop_interval_seconds = self._parse_loop_interval_seconds()
+        if loop_interval_seconds is None:
+            return
+
+        loop_count = self._parse_loop_count()
+        if loop_count is None:
+            return
+
         self.playing = True
         self.stop_event.clear()
+        self.loop_wait_seconds = loop_interval_seconds
+        self.loop_iterations = 0
+        self.loop_limit = loop_count
         status = "Playing (Ctrl+Esc to stop)"
         if self.loop_var.get():
-            status = "Playing (Loop, Ctrl+Esc to stop)"
+            if self.loop_limit > 1:
+                status = f"Playing (Loop {self.loop_limit}x every {self.loop_wait_seconds:.2f}s, Ctrl+Esc to stop)"
+            else:
+                status = f"Playing (1 run, Ctrl+Esc to stop)"
         self.status_var.set(status)
 
         self.play_thread = threading.Thread(target=self._playback_worker, daemon=True)
         self.play_thread.start()
+
+        self.bg_key_last_press = [time.monotonic()] * 10
+        self.bg_keys_thread = threading.Thread(target=self._bg_keys_worker, daemon=True)
+        self.bg_keys_thread.start()
 
     def stop_all(self):
         if self.recording:
@@ -401,25 +587,15 @@ class MacroApp:
     def _playback_worker(self):
         controller = mouse.Controller()
         keyboard_ctrl = keyboard.Controller()
-        
-        while True:
-            print(f"[DEBUG] Waiting {PLAYBACK_DELAY_SEC}s before playback...")
-            delay_end = time.monotonic() + PLAYBACK_DELAY_SEC
-            while time.monotonic() < delay_end:
-                if self.stop_event.is_set():
-                    break
-                time.sleep(0.05)
-            if self.stop_event.is_set():
-                break
 
-            print(f"[DEBUG] Starting playback with {len(self.events)} events")
+        while True:
+            self.loop_iterations += 1
             base_time = time.monotonic()
-            for i, event in enumerate(self.events):
+            for event in self.events:
                 if self.stop_event.is_set():
                     break
 
                 if event.get("t") == 0.0:
-                    print(f"[DEBUG] Skipping initial position event")
                     continue
 
                 target_time = base_time + event["t"]
@@ -428,7 +604,6 @@ class MacroApp:
                     time.sleep(wait)
 
                 try:
-                    print(f"[DEBUG] Event {i}: {event['type']}")
                     if event["type"] == "move":
                         point = self._resolve_point(event)
                         controller.position = point
@@ -454,15 +629,90 @@ class MacroApp:
                                 keyboard_ctrl.press(key_obj)
                             else:
                                 keyboard_ctrl.release(key_obj)
-                except Exception as e:
-                    print(f"[DEBUG] Error in event {i}: {e}")
+                except Exception:
+                    continue
 
             if self.stop_event.is_set() or not self.loop_var.get():
                 break
 
-        print("[DEBUG] Playback finished")
+            if self.loop_iterations >= self.loop_limit:
+                break
+
+            pause_until = time.monotonic() + self.loop_wait_seconds
+            while time.monotonic() < pause_until:
+                if self.stop_event.is_set():
+                    break
+                time.sleep(0.05)
+
+            if self.stop_event.is_set():
+                break
+
         self.playing = False
         self.status_var.set("Idle")
+
+    def _parse_loop_interval_seconds(self):
+        raw = self.loop_interval_var.get().strip()
+        if not raw:
+            raw = "0"
+            self.loop_interval_var.set(raw)
+        try:
+            value = float(raw)
+        except ValueError:
+            messagebox.showerror("Invalid loop interval", "Loop interval must be a number (seconds).")
+            return None
+        if value < 0:
+            messagebox.showerror("Invalid loop interval", "Loop interval cannot be negative.")
+            return None
+        return value
+
+    def _parse_loop_count(self):
+        raw = self.loop_count_var.get().strip()
+        if not raw:
+            raw = "1"
+            self.loop_count_var.set(raw)
+        try:
+            value = int(raw)
+        except ValueError:
+            messagebox.showerror("Invalid loop count", "Loop count must be a whole number.")
+            return None
+        if value < 1:
+            messagebox.showerror("Invalid loop count", "Loop count must be at least 1.")
+            return None
+        return value
+
+    def _bg_keys_worker(self):
+        keyboard_ctrl = keyboard.Controller()
+        while self.playing:
+            for idx in range(10):
+                if not self.bg_key_enabled_vars[idx].get():
+                    continue
+
+                key_name = self.bg_key_name_vars[idx].get().strip().lower()
+                if not key_name:
+                    continue
+
+                try:
+                    interval = float(self.bg_key_interval_vars[idx].get().strip())
+                except ValueError:
+                    continue
+
+                if interval <= 0:
+                    continue
+
+                now = time.monotonic()
+                if now - self.bg_key_last_press[idx] >= interval:
+                    try:
+                        key_obj = getattr(keyboard.Key, key_name, None)
+                        if not key_obj and len(key_name) == 1:
+                            key_obj = keyboard.KeyCode.from_char(key_name)
+                        if key_obj:
+                            keyboard_ctrl.press(key_obj)
+                            time.sleep(0.05)
+                            keyboard_ctrl.release(key_obj)
+                            self.bg_key_last_press[idx] = now
+                    except Exception:
+                        pass
+            time.sleep(0.1)
 
     def _normalize_point(self, x, y):
         _, _, width, height = get_virtual_screen_rect()
@@ -543,6 +793,23 @@ class MacroApp:
         data = {
             "created": time.strftime("%Y-%m-%d %H:%M:%S"),
             "target_title": self.target_title_var.get().strip(),
+            "hotkeys": {
+                "record": self.hotkey_record_var.get().strip(),
+                "stop": self.hotkey_stop_var.get().strip(),
+                "play": self.hotkey_play_var.get().strip(),
+                "kill": self.hotkey_kill_var.get().strip(),
+            },
+            "loop_enabled": self.loop_var.get(),
+            "loop_interval_seconds": self.loop_interval_var.get().strip(),
+            "loop_count": self.loop_count_var.get().strip(),
+            "background_keys": [
+                {
+                    "enabled": self.bg_key_enabled_vars[i].get(),
+                    "key": self.bg_key_name_vars[i].get().strip(),
+                    "interval": self.bg_key_interval_vars[i].get().strip(),
+                }
+                for i in range(10)
+            ],
             "events": self.events,
         }
         with open(path, "w", encoding="utf-8") as handle:
@@ -559,6 +826,27 @@ class MacroApp:
             data = json.load(handle)
         self.events = data.get("events", [])
         self.target_title_var.set(data.get("target_title", self.target_title_var.get()))
+        hotkeys = data.get("hotkeys", {})
+        self.hotkey_record_var.set(hotkeys.get("record", self.hotkey_record_var.get()))
+        self.hotkey_stop_var.set(hotkeys.get("stop", self.hotkey_stop_var.get()))
+        self.hotkey_play_var.set(hotkeys.get("play", self.hotkey_play_var.get()))
+        self.hotkey_kill_var.set(hotkeys.get("kill", self.hotkey_kill_var.get()))
+        self.loop_var.set(bool(data.get("loop_enabled", self.loop_var.get())))
+        saved_interval = data.get("loop_interval_seconds", self.loop_interval_var.get())
+        self.loop_interval_var.set(str(saved_interval))
+        
+        saved_count = data.get("loop_count", self.loop_count_var.get())
+        self.loop_count_var.set(str(saved_count))
+        
+        bg_keys = data.get("background_keys", [])
+        for i in range(10):
+            if i < len(bg_keys):
+                bg_key = bg_keys[i]
+                self.bg_key_enabled_vars[i].set(bool(bg_key.get("enabled", False)))
+                self.bg_key_name_vars[i].set(bg_key.get("key", f"f{i+1}"))
+                self.bg_key_interval_vars[i].set(str(bg_key.get("interval", "10.0")))
+        
+        self.apply_hotkeys(show_message=False)
         self._update_stats()
         self.status_var.set("Loaded")
 
